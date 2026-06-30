@@ -34,6 +34,7 @@
 #include <array>
 #include <bit>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -383,38 +384,52 @@ void LoadConfigFromFile(std::istream &f)
     ConfOpts.shrink_to_fit();
 }
 
-void FunkinALConfigDefault()
+void LoadSEALDefaultConfig()
 {
-    SetConfigValue("frequency", "48000");
+    #if defined(_WIN32)
+    SetConfigValue("drivers", "wasapi,dsound,winmm,null");
+    #elif defined(__linux__) && !defined(__ANDROID__)
+    SetConfigValue("drivers", "pipewire,pulse,alsa,jack,oss,null");
+    #elif defined(__APPLE__)
+    // SetConfigValue("drivers", "coreaudio,null");
+    SetConfigValue("drivers", "sdl3,null"); // coreaudio itself gives no audio output. weird.
+    #elif defined(__ANDROID__)
+    SetConfigValue("drivers", "sdl3,oboe,opensl,null");
+    #endif
     SetConfigValue("sample-type", "float32");
-    SetConfigValue("stereo-mode", "speakers");
+    SetConfigValue("channels", "stereo");
     SetConfigValue("stereo-encoding", "basic");
     SetConfigValue("cf_level", "0");
-    SetConfigValue("output-limiter", "false");
+    SetConfigValue("output-limiter", "true");
     SetConfigValue("front-stablizer", "false");
     SetConfigValue("volume-adjust", "0");
-    SetConfigValue("period_size", "441");
-    SetConfigValue("periods", "4");
-    // weird number, but ive heard that this is to avoid overhead in cpu?
-    // https://github.com/OldUnreal/UT2004Patches/issues/116
-    SetConfigValue("sources", "384");
-    SetConfigValue("sends", "64");
+    SetConfigValue("period_size", "480");
+    SetConfigValue("periods", "2");
+    SetConfigValue("sources", "256");
+    SetConfigValue("sends", "2");
     SetConfigValue("dither", "false");
-    SetConfigValue("dither-depth", "0");
-    SetConfigValue("decoder/hq-mode", "false");
-    SetConfigValue("decoder/distance-comp", "false");
+    SetConfigValue("resampler", "bsinc24");
+    SetConfigValue("rt-prio", "15");
+    SetConfigValue("rt-time-limit", "true");
+    SetConfigValue("decoder/hq-mode", "true");
+    SetConfigValue("decoder/distance-comp", "true");
     SetConfigValue("decoder/nfc", "false");
-    // exclusive-mode removes the latency about 20ms (from 80ms to 40ms in my testing -ralty)
-    // but game recorders wont be able to record the game because of the audio mixer being exclusive and not shared.
-    SetConfigValue("wasapi/exclusive-mode", "false");
-    SetConfigValue("wasapi/spatial-api", "false");
-    SetConfigValue("wasapi/allow-resampler", "false");
+    #if defined(_WIN32)
+    // SetConfigValue("wasapi/exclusive-mode", "true");
+    #endif
+    #if defined(__linux__)
+    SetConfigValue("pipewire/rt-mix", "true");
+    SetConfigValue("pulse/allow-moves", "false");
+    SetConfigValue("pulse/fix-rate", "true");
+    SetConfigValue("pulse/adjust-latency", "false");
+    SetConfigValue("alsa/mmap", "true");
+    #endif
     ConfOpts.shrink_to_fit();
 }
 
 void ReadALConfig()
 {
-    FunkinALConfigDefault();
+    LoadSEALDefaultConfig();
 
     #ifdef _WIN32
 
@@ -472,14 +487,18 @@ auto ConfigValueStr(const std::string_view devName, const std::string_view block
 auto ConfigValueI32(std::string_view const devName, std::string_view const blockName,
     std::string_view const keyName) -> std::optional<int>
 {
-    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty()) try {
-        return std::stoi(val, nullptr, 0);
-    }
-    catch(std::out_of_range&) {
-        WARN("Option is out of range of i32: {} = {}", keyName, val);
-    }
-    catch(std::exception&) {
-        WARN("Option is not an i32: {} = {}", keyName, val);
+    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty())
+    {
+        char *end{};
+        errno = 0;
+        const long long ival = std::strtoll(val.c_str(), &end, 0);
+        if(end == val.c_str())
+            WARN("Option is not an i32: {} = {}", keyName, val);
+        else if(errno == ERANGE || ival < std::numeric_limits<int>::min()
+            || ival > std::numeric_limits<int>::max())
+            WARN("Option is out of range of i32: {} = {}", keyName, val);
+        else
+            return static_cast<int>(ival);
     }
 
     return std::nullopt;
@@ -488,17 +507,17 @@ auto ConfigValueI32(std::string_view const devName, std::string_view const block
 auto ConfigValueU32(std::string_view const devName, std::string_view const blockName,
     std::string_view const keyName) -> std::optional<unsigned>
 {
-    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty()) try {
-        return gsl::narrow<unsigned>(std::stoul(val, nullptr, 0));
-    }
-    catch(std::out_of_range&) {
-        WARN("Option is out of range of u32: {} = {}", keyName, val);
-    }
-    catch(gsl::narrowing_error&) {
-        WARN("Option is out of range of u32: {} = {}", keyName, val);
-    }
-    catch(std::exception&) {
-        WARN("Option is not an u32: {} = {}", keyName, val);
+    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty())
+    {
+        char *end{};
+        errno = 0;
+        const unsigned long long uval = std::strtoull(val.c_str(), &end, 0);
+        if(end == val.c_str())
+            WARN("Option is not an u32: {} = {}", keyName, val);
+        else if(errno == ERANGE || uval > std::numeric_limits<unsigned>::max())
+            WARN("Option is out of range of u32: {} = {}", keyName, val);
+        else
+            return static_cast<unsigned>(uval);
     }
     return std::nullopt;
 }
@@ -506,11 +525,14 @@ auto ConfigValueU32(std::string_view const devName, std::string_view const block
 auto ConfigValueF32(std::string_view const devName, std::string_view const blockName,
     std::string_view const keyName) -> std::optional<float>
 {
-    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty()) try {
-        return std::stof(val);
-    }
-    catch(std::exception&) {
-        WARN("Option is not a float: {} = {}", keyName, val);
+    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty())
+    {
+        char *end{};
+        const float fval = std::strtof(val.c_str(), &end);
+        if(end == val.c_str())
+            WARN("Option is not a float: {} = {}", keyName, val);
+        else
+            return fval;
     }
     return std::nullopt;
 }
@@ -518,21 +540,19 @@ auto ConfigValueF32(std::string_view const devName, std::string_view const block
 auto ConfigValueBool(std::string_view const devName, std::string_view const blockName,
     std::string_view const keyName) -> std::optional<bool>
 {
-    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty()) try {
-        return al::case_compare(val, "on"sv) == 0 || al::case_compare(val, "yes"sv) == 0
-            || al::case_compare(val, "true"sv) == 0 || std::stoll(val) != 0;
-    }
-    catch(std::out_of_range&) {
-        /* If out of range, the value is some non-0 (true) value and it doesn't
-         * matter that it's too big or small.
-         */
-        return true;
-    }
-    catch(std::exception&) {
-        /* If stoll fails to convert for any other reason, it's some other word
-         * that's treated as false.
-         */
-        return false;
+    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty())
+    {
+        if(al::case_compare(val, "on"sv) == 0 || al::case_compare(val, "yes"sv) == 0
+            || al::case_compare(val, "true"sv) == 0)
+            return true;
+        char *end{};
+        errno = 0;
+        const long long ival = std::strtoll(val.c_str(), &end, 10);
+        if(end == val.c_str())
+            return false;
+        if(errno == ERANGE)
+            return true;
+        return ival != 0;
     }
     return std::nullopt;
 }
@@ -540,15 +560,19 @@ auto ConfigValueBool(std::string_view const devName, std::string_view const bloc
 auto GetConfigValueBool(const std::string_view devName, const std::string_view blockName,
     const std::string_view keyName, bool def) -> bool
 {
-    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty()) try {
-        return al::case_compare(val, "on"sv) == 0 || al::case_compare(val, "yes"sv) == 0
-            || al::case_compare(val, "true"sv) == 0 || std::stoll(val) != 0;
-    }
-    catch(std::out_of_range&) {
-        return true;
-    }
-    catch(std::exception&) {
-        return false;
+    if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty())
+    {
+        if(al::case_compare(val, "on"sv) == 0 || al::case_compare(val, "yes"sv) == 0
+            || al::case_compare(val, "true"sv) == 0)
+            return true;
+        char *end{};
+        errno = 0;
+        const long long ival = std::strtoll(val.c_str(), &end, 10);
+        if(end == val.c_str())
+            return false;
+        if(errno == ERANGE)
+            return true;
+        return ival != 0;
     }
     return def;
 }
