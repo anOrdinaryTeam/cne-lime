@@ -36,10 +36,29 @@ namespace lime {
 
 	SDLApplication::SDLApplication () {
 
+		SDL_SetHint (SDL_HINT_AUDIO_CHANNELS, "2");
+		SDL_SetHint (SDL_HINT_AUDIO_FORMAT, "F32");
+		SDL_SetHint (SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "480");
+
+		#ifdef IPHONE
+		SDL_SetHint (SDL_HINT_AUDIO_CATEGORY, "playback");
+		#endif
+
+		SDL_SetHint (SDL_HINT_AUDIO_DEVICE_STREAM_ROLE, "Game");
+
 		SDL_SetHint (SDL_HINT_JOYSTICK_HIDAPI, "1");
+
+		#ifdef __ANDROID__
+		SDL_SetHint (SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, "1");
+		SDL_SetHint (SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "1");
+		#endif
 
 		#ifdef IPHONE
 		SDL_SetHint (SDL_HINT_IOS_HIDE_HOME_INDICATOR, "3");
+		#endif
+
+		#ifdef HX_MACOS
+		SDL_SetHint (SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
 		#endif
 
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK | SDL_INIT_SENSOR;
